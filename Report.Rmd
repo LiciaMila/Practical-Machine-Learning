@@ -1,0 +1,267 @@
+---
+Author = Jenny Margarito
+Output: html_document
+**Prediction of Weight Lifting execution quality**
+---
+========================================================
+
+The objective of the analysis was to build a prediction model able to classify in five different classes ("A", "B", "C", "D", "E) the quality of execution of a specific physical exercise: Weight Lifting.
+
+The data used to build the prediction model were collected using several motion sensors such as accelerometers, gyroscopes located at different body parts.
+
+A training dataset and an indipendent test dataset were provided to develop and validate the prediction model.
+The original training set was split in two, the 70% of the data were used as training set and the 30% of data were used as test set to provide an estimate of the out of sample error.
+Three different models where trained and compared: **Naive Bayes**, **Linear Discriminant model** and **Random Forest**. The **10-Fold Cross Validation** was used to select the **best predictors** and the **best prediction model**.
+The different models were trained using also principal components explaining the 90% of the variance. 
+The performance of the models trained with original predictors, reduced features set and principal components were compared and the prediction algorithm providing the highest recognition accuracy on training data was applied on the test set to get an estimation of the **out of sample error**.
+
+A more detailed explanation of the analysis, the implementation code and the final results are are shown as follows. 
+
+```{r echo=FALSE, warning=FALSE, message = FALSE, error  = FALSE}
+rm(list = ls())
+#Library
+library(caret)
+library(e1071) 
+library(ggplot2)
+library(lattice)
+library(MASS)
+library(klaR)
+library(RCurl)
+directory <- "https://raw.githubusercontent.com/LiciaMila/Practical-Machine-Learning/master/"
+```
+
+```{r warning=FALSE, message = FALSE, error  = FALSE}
+# Load data
+set.seed(3433)
+filename <- paste0(directory,"pml-training.csv");
+DATA <- read.csv(filename)
+mydata <- DATA
+```
+
+```{r echo=FALSE, warning=FALSE, message = FALSE, error  = FALSE}
+
+# Size dataframe
+target = "classe"                          
+col <- dim(mydata)[2]
+obs <- dim(mydata)[1]
+out_indx <- which(names(mydata) == target) 
+
+# Define threshold to identify predictors with many NA values 
+variable<-vector(length = col);
+variable = TRUE; 
+imp_th <- 0.9;
+th_variance <- 0.9 # threshold explained variance for PCA
+
+# Classifiers to test
+classifier <- c("nb", "lda", "rf");
+
+Training_Perf <- matrix(NA, nrow = length(classifier), ncol = 4)
+Training_Perf_PCA <- matrix(NA, nrow = length(classifier), ncol = 1)
+
+colnames(Training_Perf) <-c(" # of predictors", "Accuracy%", "# of selected predictors", "Accuracy%")
+rownames(Training_Perf) <- classifier;
+colnames(Training_Perf_PCA) <- "Accuracy%"
+rownames(Training_Perf_PCA) <- classifier;
+
+Testing_Perf <- matrix(NA, nrow = 1, ncol = 1)
+colnames(Testing_Perf) <- "Accuracy%"
+
+```
+
+The initial training data contained `r obs` observations and each observation was composed by `r col` variables.
+Variables identifyng  user and time stamp and that were missing in more then the 90% of the observations were discarded.
+
+```{r echo=FALSE, warning=FALSE, message = FALSE, error = FALSE}
+# Define threshold to identify predictors with many NA value
+variable<-vector(length = col);
+variable = TRUE; 
+imp_th <- 0.9;
+
+for(i in 1:col){
+  
+  if(sum(is.na(mydata[,i]))/obs>imp_th || sum((mydata[,i])== '')/obs>imp_th) {
+    variable[i]<-FALSE
+    }
+  else{
+    variable[i]<-TRUE
+  }
+}
+
+mydata<- mydata[, which(variable == TRUE | is.na(variable))] 
+noPred <- c(1:7)           
+mydata <- mydata[, -noPred] 
+
+```
+This initial selection of features resulted in an available feature set composed by `r ncol(mydata) - 1` predictors.
+Afterwards, the original training data was split in training and test set, 70% and 30%, respectively.
+The obtained training set was used for tuning the model parameters, choosing the best predictors and the best classifier, whereas the testing data were used to provide an estimation of out of sample error.
+
+```{r warning=FALSE, message = FALSE, error = FALSE}
+# Data partionioning
+set.seed(123)
+inTrain = createDataPartition(mydata$classe, p = 0.70, list = FALSE)
+training = mydata[ inTrain,]
+testing = mydata[-inTrain,]
+
+```
+
+In order to have an idea of how balanced was the training set with respect to the target variable, the histogram for the variable "classe" was plot. The figure below shows that the training data were quite balanced although the class "A" was more represented than the other classes. However, the difference was not the high to require assigmment of different weights to different observations classes for the training of the model.
+
+````{r echo=FALSE, fig.width=5, fig.height=5}
+library(ggplot2)
+qplot( training$classe, fill = training$classe,  geom="histogram", xlab = "classe")
+```
+
+To visualize the information content of the available features, principal component analysis (PCA) decomposition were performed on the training data. The principal components which explained an overall variance equal to the 90% were selected.
+The PCA allows projecting the selected features into a two-dimensional space and visualizing their spread per classes (see figure below). The variance retained by the first two principal components was around 30%. 
+
+```{r warning=FALSE, message = FALSE, error = FALSE}
+# PCA with explained variance of 90% 
+num_pred <- sapply(training, is.numeric)
+object<-preProcess(training[,num_pred], method = "pca", thresh = 0.90)
+comp<-predict(object,training[,num_pred])
+qplot(comp[,1],comp[,2],color = training$classe, xlab = "PC1", ylab = "PC2") 
+```
+
+The representation of the first two principal components does not seem to separate the different classes and this is probably due to the fact that only the 30% of the variance was explained by the first two components. However, most likely a better separation is provided in a higher dimensional space. The description of the computed PCA is provided below.
+```{r echo = FALSE}
+ object
+```
+
+
+The data pre-processing and visualization  was followed by the developement of the prediction models.
+
+To train the classifiers **10-Fold Cross Validation** was used in order to prevent overfitting of the traning data and
+to have good balance between bias and variance. The best predictors were chosen by applying a wrapper features selection method.
+The Cross Validation was also used to choose the best classifier among: **Naive Bayes** (nb), **Linear Discriminant model** (lda) and **Random Forest** (rf). 
+These three models were chosen because they belong to different categories: Naive Bayes is a probabilistic algorithm, Linear Discriminant model is a discriminative algorithm, whereas Random Forest is one  of the most powerful heuristic algorithm.
+
+The chosen algorithms were trained also using the principal components and the their accuracy was compared with the models trained using 52 features set and with reduced features set output of the feature selection method. 
+
+The code that shows how the **10-Fold Cross Validation** was implemented is shown as follows.
+```{r warning=FALSE, message = FALSE, error = FALSE}
+
+library(caret)
+
+# Define training options
+fitControl <- trainControl(
+  method = "repeatedcv",
+  number = 10,
+  repeats = 1)
+
+# Train model 
+library(caret)
+library(pROC)
+
+for(settings in 1:2){
+  
+  if(settings == 1){
+    
+    for(i in 1:length(classifier)){
+      
+      # Train model with original predictors
+      set.seed(32343)
+      out_indx <- which(names(training) == target)
+      modelFit <- train(classe ~ ., method = classifier[i], trControl = fitControl, data = training)
+      predictions <- predict(modelFit, training[,-out_indx])
+      performance<-confusionMatrix(predictions,training$classe)
+      Training_Perf[i,1]<-length(training) - 1;
+      Training_Perf[i,2]<-as.numeric(performance$overall[1])*100
+      
+      # Select the best predictors
+      importance <-varImp(modelFit, scale = TRUE)
+      Weight_th <- 10;                          
+      VarWeight<-apply(importance$importance, 1,mean)
+      Pred<-which(VarWeight > Weight_th);           
+      
+      # Train model with selected predictors
+      set.seed(32343)
+      modelFit <- train(classe ~ ., method = classifier[i], trControl = fitControl, data = training[,c(Pred,out_indx)])
+      predictions <- predict(modelFit, training[,Pred])
+      performance<-confusionMatrix(predictions,training$classe)
+      Training_Perf[i,3]<-length(Pred);
+      Training_Perf[i,4]<-as.numeric(performance$overall[1])*100
+      
+      
+    }
+  }
+  
+  else if(settings == 2){
+    
+    # Train model with Principal Components
+    for(i in 1: length(classifier)){
+      set.seed(32343)
+      modelFit <- train(training$classe ~ ., method = classifier[i], trControl = fitControl, data = comp)
+      predictions <- predict(modelFit, comp)
+      performance<-confusionMatrix(predictions,training$classe)
+      Training_Perf_PCA[i,1]<-as.numeric(performance$overall[1])*100
+    }
+    
+  }
+  
+}
+
+```
+The final results of the Cross Validation applied on the traning data are shown in the tables below. The first table contains classification accuracy calculated with 52 predictors for the three different classifiers and the classification accuracy of the models trained with a smaller number of predictors, selected by the feature selection procedure. The second table contains the classification accuracy of the three different classifier trained with the computed 18 principal components.
+
+```{r echo =FALSE}
+print(Training_Perf)
+print(Training_Perf_PCA)
+```
+
+The accuracy values evaluated by performing **10-Fold Cross Validation** on the training set show the sliglthly recognition rate decreases  with respect to the descrease of the number of predictors, this proved that the feature selection algorithm was able to extract the predictors which better separate different classes, without sacrifying accuracy.
+As regards the comparison between different classifiers, Random Forest algorithm provided the highest accuracy and kept the same recognition rate even with a much smaller feature set. 
+The **Naive Bayes** (nb), **Linear Discriminant model** trained with the principal components obtained a lower accuracy than the models trained with a small number of predictors. This might mean that original predictors work better than the computed principal components. Therefore, looking at the complete results the best model resulted to be Random Forest trained with `r length(Pred)` features.
+
+```{r echo =FALSE, warning=FALSE, message = FALSE}
+# Get the best model with best predictors chosen with Cross-validation on the training set
+library(caret)
+library(pROC)
+out_indx <- which(names(training) == target)
+set.seed(32343)
+modelFit <- train(classe ~ ., method = classifier[3], trControl = fitControl, data = training)
+importance <-varImp(modelFit, scale = TRUE)
+Weight_th <- 10;                          
+VarWeight<-apply(importance$importance, 1,mean)
+Pred<-which(VarWeight > Weight_th);            
+set.seed(32343)
+modelFit <- train(classe ~ ., method = classifier[3], trControl = fitControl, data = training[,c(Pred,out_indx)])
+```
+
+The model details are shown below.
+
+```{r echo = FALSE, warning=FALSE, message = FALSE}
+modelFit
+
+```
+
+The selected features were the following:
+
+```{r echo= FALSE}
+print(names(training[,Pred]))
+```
+
+This model was applied on the test set in order to get an estimation of the **out of sample error**.
+
+```{r warning=FALSE, message = FALSE}
+
+# Test the best model on the test set
+predictions <- predict(modelFit, testing[,Pred])
+performance<-confusionMatrix(predictions,testing$classe)
+Testing_Perf[1]<-as.numeric(performance$overall[1])*100
+Testing_Perf[1]<-round(Testing_Perf[1], digits = 1);
+
+```
+
+The confusion matrix calculated on the test set and accuracy index are shown below.
+
+```{r echo = FALSE}
+performance
+```
+
+The estimated **out of sample error** is expressed in terms of **accuracy** and resulted to be: `r Testing_Perf[1]`%. 
+
+Such value represents what is expected to obtain in a further validation on indipendent data.
+The recognition accuracy calculated on the test set is really close to the accuracy obtained from the Cross-Validation on the training set. Such result seems promising and proves the that the developed model is able to generalize and does not overfit the training set. 
+
+
